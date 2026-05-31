@@ -1,0 +1,62 @@
+agent:
+  # Main LLM — used for the primary reasoning loop
+  model: "deepseek/deepseek-v3.2"
+  provider: openrouter
+  api_key: "${OPENROUTER_API_KEY}"
+  max_tokens: 8192
+  max_tool_iterations: 15
+  storage_path: ".daedalus.db"
+
+  # Optional: custom system prompt (leave empty to use the default)
+  system_prompt: ""
+
+workers:
+  # fast — cheap/quick model for drafts and simple tasks
+  fast:
+    model: "google/gemini-2.5-flash"
+    provider: openrouter
+    api_key: "${OPENROUTER_API_KEY}"
+
+  # balanced — general purpose
+  balanced:
+    model: "meta-llama/llama-3.3-70b-instruct"
+    provider: openrouter
+    api_key: "${OPENROUTER_API_KEY}"
+
+  # deep — most powerful, slowest, for complex analysis
+  deep:
+    model: "deepseek/deepseek-v3.2"
+    provider: openrouter
+    api_key: "${OPENROUTER_API_KEY}"
+
+  # coder — code specialist, used by TDD loop for fixes
+  coder:
+    model: "deepseek/deepseek-v3.2"
+    provider: openrouter
+    api_key: "${OPENROUTER_API_KEY}"
+
+  # reviewer — strict code reviewer
+  reviewer:
+    model: "anthropic/claude-sonnet-4-5"
+    provider: openrouter
+    api_key: "${OPENROUTER_API_KEY}"
+
+# --- Alternative: local Ollama (no API key needed) ---
+# agent:
+#   model: "qwen2.5-coder:14b"
+#   provider: ollama
+#   base_url: "http://localhost:11434/v1"
+#   api_key: "ollama"
+#
+# workers:
+#   coder:
+#     model: "qwen2.5-coder:14b"
+#     provider: ollama
+#     base_url: "http://localhost:11434/v1"
+#     api_key: "ollama"
+
+# --- Alternative: Anthropic direct ---
+# agent:
+#   model: "claude-sonnet-4-5"
+#   provider: anthropic
+#   api_key: "${ANTHROPIC_API_KEY}"
