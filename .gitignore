@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Daedalus runtime data
+.daedalus.db
+.daedalus_storage.json
+daedalus_sandbox_*/
+
+# Environment secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test output
+output/
+target.py
