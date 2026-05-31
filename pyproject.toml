@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "daedalus-agent"
+version = "0.1.0"
+description = "Autonomous coding agent with TDD loop, lint gate, sandbox, and parallel workers"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Daedalus-Agent Contributors" }]
+keywords = ["ai", "agent", "coding", "tdd", "llm", "autonomous"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openai>=1.30.0",
+    "ruff>=0.4.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.30.0"]
+security = ["bandit>=1.7.0"]
+yaml = ["pyyaml>=6.0"]
+all = [
+    "anthropic>=0.30.0",
+    "bandit>=1.7.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Blaue-Ente/Daedalus-Agent"
+Issues   = "https://github.com/Blaue-Ente/Daedalus-Agent/issues"
+
+[project.scripts]
+daedalus = "daedalus.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["daedalus*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F", "E", "W"]
+ignore = ["E501"]
