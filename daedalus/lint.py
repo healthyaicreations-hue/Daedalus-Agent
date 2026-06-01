@@ -1,13 +1,13 @@
-"""Daedalus Lint Gate — proactive ruff check on proposed Python code.
+"""Lint Gate — proactive ruff check on proposed Python code.
 
-Runs BEFORE the sandbox in the proposal pipeline.
+Runs BEFORE the sandbox in propose_patch_validated().
 F-codes (pyflakes real bugs) → BLOCK proposal.
 E/W-codes (style) → WARN, stored on proposal for visibility.
 
 API:
-  lint_content(file_path, content) -> LintResult
-  lint_file(file_path)             -> LintResult
-  format_result(result)            -> str
+  lint_content(file_path, content) → LintResult
+  lint_file(file_path)             → LintResult
+  format_for_daedalus(result)      → str  (human-readable for NEED_LINT response)
 """
 from __future__ import annotations
 
@@ -16,13 +16,19 @@ import logging
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
+# F = pyflakes: undefined names, unused imports, redefined vars → real bugs → BLOCK
+# E = pycodestyle errors: indentation, line length, syntax-adjacent
+# W = pycodestyle warnings: style
+# We block only on F + E1xx (indentation/syntax) codes
 _BLOCKING_PREFIXES = ("F",)
 _WARN_PREFIXES = ("E", "W")
+
+# Max issues reported in the Дедал tool output to keep context short
 _MAX_REPORT = 20
 
 
@@ -32,7 +38,7 @@ class LintIssue:
     row: int
     col: int
     message: str
-    severity: str = "warning"
+    severity: str  # "error" | "warning" | "information"
 
     @property
     def is_blocking(self) -> bool:
@@ -44,12 +50,12 @@ class LintIssue:
 
 @dataclass
 class LintResult:
-    ok: bool
+    ok: bool               # True = no blocking issues
     issues: list[LintIssue] = field(default_factory=list)
     blockers: list[LintIssue] = field(default_factory=list)
     warnings: list[LintIssue] = field(default_factory=list)
     file_path: str = ""
-    error: str = ""
+    error: str = ""        # set if ruff itself failed to run
 
     def to_dict(self) -> dict:
         return {
@@ -70,10 +76,18 @@ def _is_python(file_path: str) -> bool:
 
 
 def _run_ruff(path: str) -> tuple[list[LintIssue], str]:
-    cmd = [sys.executable, "-m", "ruff", "check",
-           "--select", "F,E,W", "--output-format", "json", "--quiet", path]
+    """Run ruff on a file path, return (issues, error_msg)."""
+    cmd = [
+        sys.executable, "-m", "ruff", "check",
+        "--select", "F,E,W",
+        "--output-format", "json",
+        "--quiet",
+        path,
+    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=15
+        )
         raw = result.stdout.strip()
         if not raw:
             return [], ""
@@ -94,8 +108,6 @@ def _run_ruff(path: str) -> tuple[list[LintIssue], str]:
         return [], "ruff timeout after 15s"
     except json.JSONDecodeError as exc:
         return [], f"ruff output parse error: {exc}"
-    except FileNotFoundError:
-        return [], "ruff not installed (pip install ruff)"
     except Exception as exc:
         return [], f"ruff failed: {exc}"
 
@@ -116,49 +128,73 @@ def _build_result(issues: list[LintIssue], file_path: str, error: str) -> LintRe
 def lint_content(file_path: str, content: str) -> LintResult:
     """Lint arbitrary string content as if it were file_path.
 
-    Non-Python files always return ok=True (no-op).
+    Used in propose_patch_validated() to check new_content before creating proposal.
+    Non-Python files → always ok (no-op).
     """
     if not _is_python(file_path):
         return LintResult(ok=True, file_path=file_path)
+
     suffix = Path(file_path).suffix or ".py"
-    with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8") as tmp:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=suffix, delete=False, encoding="utf-8"
+    ) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
+
     try:
         issues, error = _run_ruff(tmp_path)
-        return _build_result(issues, file_path, error)
+        # Fix row numbers — they're correct; fix filename in messages
+        result = _build_result(issues, file_path, error)
+        log.debug("lint_content %s: blockers=%d warnings=%d",
+                  file_path, len(result.blockers), len(result.warnings))
+        return result
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def lint_file(file_path: str) -> LintResult:
-    """Lint an existing file on disk."""
+    """Lint an existing file on disk.
+
+    Used by NEED_LINT marker — Дедал queries current lint state of a file.
+    """
     p = Path(file_path)
     if not p.exists():
-        return LintResult(ok=False, file_path=file_path, error=f"file not found: {file_path}")
+        return LintResult(ok=False, file_path=file_path,
+                          error=f"file not found: {file_path}")
     if not _is_python(file_path):
         return LintResult(ok=True, file_path=file_path)
+
     issues, error = _run_ruff(str(p))
     return _build_result(issues, file_path, error)
 
 
-def format_result(result: LintResult) -> str:
-    """Render LintResult as a readable string."""
+def format_for_daedalus(result: LintResult) -> str:
+    """Render LintResult as a readable string for Дедал's tool output."""
     lines: list[str] = []
     fp = result.file_path or "?"
     if result.error:
-        return f"⚠ ruff error: {result.error}"
+        lines.append(f"⚠ ruff грешка при стартиране: {result.error}")
+        return "\n".join(lines)
+
     if result.ok and not result.warnings:
-        return f"✅ Lint OK — {fp} — no issues"
+        lines.append(f"✅ Lint OK — {fp} — нито един проблем")
+        return "\n".join(lines)
+
     if result.blockers:
-        lines.append(f"🚫 LINT BLOCKERS ({len(result.blockers)}) — {fp}")
-        lines.append("   (These errors BLOCK the proposal — fix them first)")
+        lines.append(f"🚫 LINT БЛОКЕРИ ({len(result.blockers)}) — {fp}")
+        lines.append("   (Тези грешки БЛОКИРАТ proposal-а — поправи ги първо)")
         for i in result.blockers[:_MAX_REPORT]:
             lines.append(i.short())
+
     if result.warnings:
-        lines.append(f"⚠ Lint warnings ({len(result.warnings)}) — {fp}")
+        lines.append(f"⚠ Lint предупреждения ({len(result.warnings)}) — {fp}")
         for i in result.warnings[:_MAX_REPORT]:
             lines.append(i.short())
+
     if not result.blockers:
-        lines.append("✅ No blockers — proposal allowed (warnings only)")
+        lines.append("✅ Няма блокери — proposal е разрешен (само предупреждения)")
+
     return "\n".join(lines)
