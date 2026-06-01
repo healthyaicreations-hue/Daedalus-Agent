@@ -1,149 +1,96 @@
-"""Pluggable storage backend for Daedalus-Agent.
+"""
+Daedalus Storage — portable key-value persistence layer.
 
-Replaces Replit DB (used in ADN) with portable alternatives.
+Replaces Replit DB with a JSON-file backend so the standalone framework
+works in any environment. Drop-in compatible with the Replit DB pattern.
 
-Backends:
-  JsonStorage(path)    — single JSON file, good for local dev
-  SqliteStorage(path)  — SQLite, good for production standalone use
-  MemoryStorage()      — in-process only, good for testing
+Usage:
+    from daedalus.storage import kv_get, kv_set, kv_del, kv_keys
 
-All backends implement the Storage protocol:
-  get(key) -> Any | None
-  set(key, value) -> None
-  delete(key) -> None
-  keys(prefix) -> list[str]
+The storage file defaults to  ~/.daedalus/store.json
+Override with  DAEDALUS_STORE_PATH  env var.
 """
 from __future__ import annotations
 
 import json
-import sqlite3
+import logging
+import os
 import threading
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+_STORE_PATH = Path(
+    os.environ.get("DAEDALUS_STORE_PATH", str(Path.home() / ".daedalus" / "store.json"))
+)
+_LOCK = threading.Lock()
 
 
-class Storage(Protocol):
-    def get(self, key: str) -> Any | None: ...
-    def set(self, key: str, value: Any) -> None: ...
-    def delete(self, key: str) -> None: ...
-    def keys(self, prefix: str = "") -> list[str]: ...
+def _load() -> dict:
+    try:
+        if _STORE_PATH.exists():
+            return json.loads(_STORE_PATH.read_text("utf-8"))
+    except Exception as exc:
+        log.warning("storage: load failed: %s", exc)
+    return {}
 
 
-class MemoryStorage:
-    """Thread-safe in-memory storage. Data lost on restart."""
-
-    def __init__(self) -> None:
-        self._data: dict[str, Any] = {}
-        self._lock = threading.Lock()
-
-    def get(self, key: str) -> Any | None:
-        with self._lock:
-            return self._data.get(key)
-
-    def set(self, key: str, value: Any) -> None:
-        with self._lock:
-            self._data[key] = value
-
-    def delete(self, key: str) -> None:
-        with self._lock:
-            self._data.pop(key, None)
-
-    def keys(self, prefix: str = "") -> list[str]:
-        with self._lock:
-            return [k for k in self._data if k.startswith(prefix)]
+def _save(data: dict) -> None:
+    try:
+        _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    except Exception as exc:
+        log.warning("storage: save failed: %s", exc)
 
 
-class JsonStorage:
-    """Persistent JSON file storage. Good for single-process local use."""
-
-    def __init__(self, path: str | Path = ".daedalus_storage.json") -> None:
-        self._path = Path(path)
-        self._lock = threading.Lock()
-        if not self._path.exists():
-            self._path.write_text("{}", encoding="utf-8")
-
-    def _load(self) -> dict:
-        try:
-            return json.loads(self._path.read_text("utf-8"))
-        except Exception:
-            return {}
-
-    def _save(self, data: dict) -> None:
-        self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def get(self, key: str) -> Any | None:
-        with self._lock:
-            return self._load().get(key)
-
-    def set(self, key: str, value: Any) -> None:
-        with self._lock:
-            data = self._load()
-            data[key] = value
-            self._save(data)
-
-    def delete(self, key: str) -> None:
-        with self._lock:
-            data = self._load()
-            data.pop(key, None)
-            self._save(data)
-
-    def keys(self, prefix: str = "") -> list[str]:
-        with self._lock:
-            return [k for k in self._load() if k.startswith(prefix)]
+def kv_get(key: str, default: Any = None) -> Any:
+    with _LOCK:
+        return _load().get(key, default)
 
 
-class SqliteStorage:
-    """SQLite-backed storage. Good for concurrent / production use."""
-
-    def __init__(self, path: str | Path = ".daedalus.db") -> None:
-        self._path = str(path)
-        self._local = threading.local()
-        self._init_db()
-
-    def _conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn"):
-            self._local.conn = sqlite3.connect(self._path, check_same_thread=False)
-            self._local.conn.row_factory = sqlite3.Row
-        return self._local.conn
-
-    def _init_db(self) -> None:
-        conn = sqlite3.connect(self._path)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS kv "
-            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        conn.commit()
-        conn.close()
-
-    def get(self, key: str) -> Any | None:
-        row = self._conn().execute(
-            "SELECT value FROM kv WHERE key=?", (key,)
-        ).fetchone()
-        if row is None:
-            return None
-        try:
-            return json.loads(row["value"])
-        except Exception:
-            return row["value"]
-
-    def set(self, key: str, value: Any) -> None:
-        self._conn().execute(
-            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
-            (key, json.dumps(value, ensure_ascii=False)),
-        )
-        self._conn().commit()
-
-    def delete(self, key: str) -> None:
-        self._conn().execute("DELETE FROM kv WHERE key=?", (key,))
-        self._conn().commit()
-
-    def keys(self, prefix: str = "") -> list[str]:
-        rows = self._conn().execute(
-            "SELECT key FROM kv WHERE key LIKE ?", (prefix + "%",)
-        ).fetchall()
-        return [r["key"] for r in rows]
+def kv_set(key: str, value: Any) -> None:
+    with _LOCK:
+        data = _load()
+        data[key] = value
+        _save(data)
 
 
-def default_storage(path: str = ".daedalus.db") -> Storage:
-    """Return the recommended storage backend (SQLite)."""
-    return SqliteStorage(path)
+def kv_del(key: str) -> None:
+    with _LOCK:
+        data = _load()
+        data.pop(key, None)
+        _save(data)
+
+
+def kv_keys(prefix: str = "") -> list[str]:
+    with _LOCK:
+        return [k for k in _load() if k.startswith(prefix)]
+
+
+# ── Compat shim mimicking replit.db dict-like interface ──────────────────────
+
+class _DB:
+    def get(self, key: str, default: Any = None) -> Any:
+        return kv_get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        v = kv_get(key)
+        if v is None:
+            raise KeyError(key)
+        return v
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        kv_set(key, value)
+
+    def __delitem__(self, key: str) -> None:
+        kv_del(key)
+
+    def __contains__(self, key: object) -> bool:
+        return kv_get(str(key)) is not None
+
+    def prefix(self, prefix: str) -> list[str]:
+        return kv_keys(prefix)
+
+
+db = _DB()
